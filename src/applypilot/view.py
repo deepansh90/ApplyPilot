@@ -72,15 +72,25 @@ def generate_dashboard(output_path: str | None = None) -> str:
         FROM jobs GROUP BY site ORDER BY high_fit DESC, total DESC
     """).fetchall()
 
-    # All scored jobs (5+), ordered by score desc
-    jobs = conn.execute("""
-        SELECT url, title, salary, description, location, site, strategy,
-               full_description, application_url, detail_error,
-               fit_score, score_reasoning
-        FROM jobs
-        WHERE fit_score >= 5
-        ORDER BY fit_score DESC, site, title
-    """).fetchall()
+    # Scored jobs (5+) plus, when nothing is scored yet, everything discovered —
+    # otherwise the table reads "Showing 0 of 0 jobs" while the header says N jobs.
+    if scored:
+        jobs = conn.execute("""
+            SELECT url, title, salary, description, location, site, strategy,
+                   full_description, application_url, detail_error,
+                   fit_score, score_reasoning
+            FROM jobs
+            WHERE fit_score >= 5 OR fit_score IS NULL
+            ORDER BY (fit_score IS NULL), fit_score DESC, site, title
+        """).fetchall()
+    else:
+        jobs = conn.execute("""
+            SELECT url, title, salary, description, location, site, strategy,
+                   full_description, application_url, detail_error,
+                   fit_score, score_reasoning
+            FROM jobs
+            ORDER BY discovered_at DESC, site, title
+        """).fetchall()
 
     # Color map per site
     colors = {
@@ -132,15 +142,19 @@ def generate_dashboard(output_path: str | None = None) -> str:
         if score != current_score:
             if current_score is not None:
                 job_sections += "</div>"
-            score_color = "#10b981" if score >= 7 else "#f59e0b"
+            score_color = "#10b981" if score >= 7 else ("#f59e0b" if score >= 1 else "#64748b")
             score_label = {
                 10: "Perfect Match", 9: "Excellent Fit", 8: "Strong Fit",
-                7: "Good Fit", 6: "Moderate+", 5: "Moderate",
+                7: "Good Fit", 6: "Moderate+", 5: "Moderate", 0: "Not yet scored",
             }.get(score, f"Score {score}")
-            count_at_score = score_dist.get(score, 0)
+            count_at_score = (
+                sum(1 for jj in jobs if (jj["fit_score"] or 0) == score)
+                if score == 0 else score_dist.get(score, 0)
+            )
+            badge = "&mdash;" if score == 0 else str(score)
             job_sections += f"""
             <h2 class="score-header" style="border-color:{score_color}">
-              <span class="score-badge" style="background:{score_color}">{score}</span>
+              <span class="score-badge" style="background:{score_color}">{badge}</span>
               {score_label} ({count_at_score} jobs)
             </h2>
             <div class="job-grid">"""
@@ -313,7 +327,8 @@ def generate_dashboard(output_path: str | None = None) -> str:
 
 <div class="filters">
   <span class="filter-label">Score:</span>
-  <button class="filter-btn active" onclick="filterScore(0)">All 5+</button>
+  <button class="filter-btn active" onclick="filterScore(0)">All</button>
+  <button class="filter-btn" onclick="filterScore(5)">5+ Scored</button>
   <button class="filter-btn" onclick="filterScore(7)">7+ Strong</button>
   <button class="filter-btn" onclick="filterScore(8)">8+ Excellent</button>
   <button class="filter-btn" onclick="filterScore(9)">9+ Perfect</button>
@@ -359,7 +374,7 @@ function applyFilters() {{
     total++;
     const score = parseInt(card.dataset.score) || 0;
     const text = card.textContent.toLowerCase();
-    const scoreMatch = score >= (minScore || 5);
+    const scoreMatch = score >= minScore;
     const textMatch = !searchText || text.includes(searchText);
     if (scoreMatch && textMatch) {{
       card.classList.remove('hidden');
