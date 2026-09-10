@@ -214,14 +214,38 @@ def _build_hard_rules(profile: dict) -> str:
 3. {name_rule}"""
 
 
+def _human_captcha_enabled() -> bool:
+    v = (os.environ.get("APPLYPILOT_CAPTCHA_HUMAN", "") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def _build_captcha_section() -> str:
     """Build the CAPTCHA detection and solving instructions.
 
     Reads the CapSolver API key from environment. The CAPTCHA section
     contains no personal data -- it's the same for every user.
+
+    When APPLYPILOT_CAPTCHA_HUMAN=1, the agent never solves a CAPTCHA itself —
+    it hands the visible browser to the operator and waits.
     """
     config.load_env()
     capsolver_key = os.environ.get("CAPSOLVER_API_KEY", "")
+
+    if _human_captcha_enabled():
+        return """== CAPTCHA ==
+Human-in-the-loop mode. You do NOT solve CAPTCHAs — a person is watching this browser.
+
+When a CAPTCHA / "verify you are human" / bot-check / Cloudflare challenge appears
+(after navigation, an Apply/Submit/Login click, or when a page feels stuck):
+1. STOP interacting with the page. Do not click, type, or run scripts on the challenge.
+2. Print exactly, on its own line:  ACTION_REQUIRED: solve the CAPTCHA in the browser window, then I will continue
+3. Then poll every 15 seconds with browser_snapshot (up to 20 times = 5 minutes),
+   checking whether the challenge element is gone / the page advanced.
+4. As soon as the challenge is cleared, continue the application from where you were.
+5. If it is still present after 5 minutes -> Output RESULT:CAPTCHA and stop.
+
+Never attempt audio challenges, image puzzles, math/logic questions, or any
+CapSolver / third-party solving API in this mode."""
 
     return f"""== CAPTCHA ==
 You solve CAPTCHAs via the CapSolver REST API. No browser extension. You control the entire flow.
