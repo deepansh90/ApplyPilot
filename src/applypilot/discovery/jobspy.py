@@ -102,10 +102,12 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     _remote_tokens = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
     place_accepts = [a.lower() for a in accept if a.lower() not in _remote_tokens]
 
-    if any(a in loc for a in place_accepts):
-        return True
+    # Reject wins over accept (so a broad accept like "India" doesn't re-admit a
+    # rejected metro like "Bangalore, India").
     if any(r.lower() in loc for r in reject):
         return False
+    if any(a in loc for a in place_accepts):
+        return True
 
     stripped = loc
     for t in _remote_tokens:

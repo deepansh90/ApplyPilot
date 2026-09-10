@@ -88,14 +88,15 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
 
     if not loc:
         return not place_accepts
-    matches_place_accept = any(a in loc for a in place_accepts)
 
-    if matches_place_accept:
-        return True
-
-    # An explicitly rejected region (e.g. "United States") — reject even if "remote".
+    # Reject wins over accept: an explicitly rejected region is out even if it also
+    # contains a broad accept term ("Bangalore, India" with accept=["India"],
+    # reject=["Bangalore"]) or says "remote" ("Canada, Remote").
     if any(r.lower() in loc for r in reject):
         return False
+
+    if any(a in loc for a in place_accepts):
+        return True
 
     # Strip remote/work-style tokens and separators; if nothing geographic remains,
     # it's true location-agnostic remote → accept.
