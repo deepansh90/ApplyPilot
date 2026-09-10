@@ -90,6 +90,47 @@ KEYWORDS: [comma-separated ATS keywords from the job description that match or c
 REASONING: [2-3 sentences explaining the score]"""
 
 
+BATCH_SCORE_PROMPT = """You are a job fit evaluator. You are given ONE candidate resume and a NUMBERED list of job postings.
+Score how well the candidate fits EACH role, 1-10.
+
+SCORING: 9-10 perfect · 7-8 strong (minor gaps) · 5-6 moderate (missing key reqs) · 3-4 weak · 1-2 poor/different field.
+Weight technical skills, transferable experience, project experience, and seniority/years fit.
+
+Return ONLY a JSON array, one object per job, no prose, no markdown fence:
+[{"i": <job number>, "score": <1-10>, "keywords": "<comma-separated matching ATS keywords>", "reasoning": "<1-2 sentences>"}]
+Include every job number exactly once."""
+
+
+def _parse_batch_response(response: str, n: int) -> dict[int, dict]:
+    """Parse the batch JSON array into {job_index: {score, keywords, reasoning}}."""
+    txt = response.strip()
+    # strip an accidental ```json fence
+    if txt.startswith("```"):
+        txt = re.sub(r"^```[a-z]*\n?|\n?```$", "", txt).strip()
+    start, end = txt.find("["), txt.rfind("]")
+    out: dict[int, dict] = {}
+    if start == -1 or end == -1:
+        return out
+    try:
+        arr = json.loads(txt[start:end + 1])
+    except Exception:
+        return out
+    for item in arr if isinstance(arr, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            i = int(item["i"])
+            s = max(1, min(10, int(item["score"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        out[i] = {
+            "score": s,
+            "keywords": str(item.get("keywords", ""))[:300],
+            "reasoning": str(item.get("reasoning", ""))[:400],
+        }
+    return out
+
+
 def _parse_score_response(response: str) -> dict:
     """Parse the LLM's score response into structured data.
 
@@ -163,18 +204,82 @@ def score_job(resume_text: str, job: dict, use_cache: bool = True) -> dict:
         return {"score": 0, "keywords": "", "reasoning": f"LLM error: {e}", "cached": False}
 
     result["cached"] = False
-    if key and result.get("score", 0) > 0:
-        global _cache_dirty
-        _load_cache()[key] = {
-            "score": result["score"],
-            "keywords": result.get("keywords", ""),
-            "reasoning": result.get("reasoning", ""),
-            "title": job.get("title", ""),
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        }
-        _cache_dirty += 1
-        _save_cache()
+    _cache_put(key, result, job.get("title", ""))
     return result
+
+
+def _job_text(job: dict, max_desc: int) -> str:
+    return (
+        f"TITLE: {job['title']}\n"
+        f"COMPANY: {job['site']}\n"
+        f"LOCATION: {job.get('location', 'N/A')}\n\n"
+        f"DESCRIPTION:\n{(job.get('full_description') or '')[:max_desc]}"
+    )
+
+
+def _cache_put(key: str | None, result: dict, title: str) -> None:
+    global _cache_dirty
+    if not key or result.get("score", 0) <= 0:
+        return
+    _load_cache()[key] = {
+        "score": result["score"],
+        "keywords": result.get("keywords", ""),
+        "reasoning": result.get("reasoning", ""),
+        "title": title,
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _cache_dirty += 1
+    _save_cache()
+
+
+def score_jobs_batch(resume_text: str, jobs: list[dict], use_cache: bool = True) -> list[dict]:
+    """Score many jobs in a single LLM call. Returns results aligned to `jobs`.
+
+    Cache hits are served without an LLM call; only the misses go into the batch
+    prompt. On a malformed batch response, the batch falls back to per-job scoring.
+    """
+    results: list[dict | None] = [None] * len(jobs)
+    misses: list[int] = []
+    keys: list[str | None] = [None] * len(jobs)
+    cache_on = use_cache and _cache_enabled()
+
+    for idx, job in enumerate(jobs):
+        if cache_on:
+            k = _cache_key(resume_text, _job_text(job, 6000))
+            keys[idx] = k
+            hit = _load_cache().get(k)
+            if isinstance(hit, dict) and isinstance(hit.get("score"), int) and hit["score"] > 0:
+                results[idx] = {"score": hit["score"], "keywords": hit.get("keywords", ""),
+                                "reasoning": hit.get("reasoning", ""), "cached": True}
+                continue
+        misses.append(idx)
+
+    if misses:
+        # one prompt for up to ~10 jobs; keep each JD short so context stays sane
+        blocks = []
+        for n, idx in enumerate(misses):
+            blocks.append(f"===== JOB {n} =====\n{_job_text(jobs[idx], 2200)}")
+        messages = [
+            {"role": "system", "content": BATCH_SCORE_PROMPT},
+            {"role": "user", "content": f"RESUME:\n{resume_text}\n\n" + "\n\n".join(blocks)},
+        ]
+        parsed: dict[int, dict] = {}
+        try:
+            client = get_client()
+            resp = client.chat(messages, max_tokens=min(4000, 260 * len(misses) + 200), temperature=0.2)
+            parsed = _parse_batch_response(resp, len(misses))
+        except Exception as e:
+            log.warning("batch score call failed (%s) — falling back to per-job", e)
+
+        for n, idx in enumerate(misses):
+            if n in parsed:
+                r = {**parsed[n], "cached": False}
+            else:
+                r = score_job(resume_text, jobs[idx], use_cache=False)  # per-job fallback
+            results[idx] = r
+            _cache_put(keys[idx], r, jobs[idx].get("title", ""))
+
+    return [r or {"score": 0, "keywords": "", "reasoning": "no result", "cached": False} for r in results]
 
 
 def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
@@ -210,47 +315,49 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     _n_cache = 0
     if _cache_enabled() and not rescore:
         log.info("Score cache: %d entries at %s", len(_load_cache()), _CACHE_PATH)
-    log.info("Scoring %d jobs sequentially...", len(jobs))
+
+    try:
+        batch_size = max(1, int(os.environ.get("APPLYPILOT_SCORE_BATCH", "8")))
+    except ValueError:
+        batch_size = 8
+
+    log.info("Scoring %d jobs in batches of %d...", len(jobs), batch_size)
     t0 = time.time()
     completed = 0
     errors = 0
     results: list[dict] = []
 
-    # Persist per job. The previous version buffered every result and committed
-    # once at the very end, so any interruption (rate-limit crash, kill, sleep)
-    # threw away the whole run and left fit_score NULL — and re-runs re-burned
-    # the API quota from scratch. Per-job commits make scoring durable + resumable.
-    for job in jobs:
-        result = score_job(resume_text, job, use_cache=not rescore)
-        result["url"] = job["url"]
-        completed += 1
+    # Batch scoring: one LLM call per `batch_size` jobs (cache hits skip the call
+    # entirely). ~10x fewer requests → survives the free-tier RPM limit in minutes,
+    # not tens of minutes. DB is committed per batch so a kill/crash keeps progress.
+    for start in range(0, len(jobs), batch_size):
+        chunk = jobs[start:start + batch_size]
+        chunk_results = score_jobs_batch(resume_text, chunk, use_cache=not rescore)
 
-        if result["score"] == 0:
-            errors += 1
-        if result.get("cached"):
-            _n_cache += 1
-
-        results.append(result)
-
-        try:
-            conn.execute(
-                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-                (result["score"], f"{result['keywords']}\n{result['reasoning']}",
-                 datetime.now(timezone.utc).isoformat(), result["url"]),
+        for job, result in zip(chunk, chunk_results):
+            result["url"] = job["url"]
+            completed += 1
+            if result["score"] == 0:
+                errors += 1
+            if result.get("cached"):
+                _n_cache += 1
+            results.append(result)
+            try:
+                conn.execute(
+                    "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+                    (result["score"], f"{result['keywords']}\n{result['reasoning']}",
+                     datetime.now(timezone.utc).isoformat(), result["url"]),
+                )
+            except Exception as e:
+                log.warning("DB write failed for %s: %s", result["url"], e)
+            log.info(
+                "[%d/%d] score=%d%s  %s",
+                completed, len(jobs), result["score"],
+                " (cache)" if result.get("cached") else "",
+                job.get("title", "?")[:60],
             )
-            if completed % 5 == 0:
-                conn.commit()
-        except Exception as e:
-            log.warning("DB write failed for %s: %s", result["url"], e)
+        conn.commit()
 
-        log.info(
-            "[%d/%d] score=%d%s  %s",
-            completed, len(jobs), result["score"],
-            " (cache)" if result.get("cached") else "",
-            job.get("title", "?")[:60],
-        )
-
-    conn.commit()
     _save_cache(force=True)
 
     elapsed = time.time() - t0
