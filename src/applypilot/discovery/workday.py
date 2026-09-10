@@ -51,24 +51,42 @@ def _load_location_filter(search_cfg: dict | None = None):
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
-    """Check if a job location passes the user's location filter."""
+    """Check if a job location passes the user's location filter.
+
+    Note: a reject pattern wins even when the location says "remote" (e.g.
+    "Canada, Remote" is still rejected when `reject` contains "Canada"),
+    unless the location also matches an accept pattern. This matters for
+    non-US searches where "remote" usually means "remote *within that country*".
+    """
     if not location:
         return True
 
     loc = location.lower()
+    _remote_tokens = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
+    # Real place-name accepts only — not the "remote"/"anywhere" tokens, otherwise
+    # "Canada, Remote" would count as an accepted location.
+    place_accepts = [a.lower() for a in accept if a.lower() not in _remote_tokens]
+    matches_place_accept = any(a in loc for a in place_accepts)
 
-    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
+    if matches_place_accept:
         return True
 
-    for r in reject:
-        if r.lower() in loc:
-            return False
+    # An explicitly rejected region (e.g. "United States") — reject even if "remote".
+    if any(r.lower() in loc for r in reject):
+        return False
 
-    for a in accept:
-        if a.lower() in loc:
-            return True
+    # Strip remote/work-style tokens and separators; if nothing geographic remains,
+    # it's true location-agnostic remote → accept.
+    stripped = loc
+    for t in _remote_tokens:
+        stripped = stripped.replace(t, " ")
+    stripped = re.sub(r"[,/|()\-–—:;.\s]+", " ", stripped).strip()
+    if not stripped:
+        return True
 
-    return False
+    # A specific place is named but it's neither accepted nor rejected. If the user
+    # gave an accept list at all, treat unknown geography as out-of-scope.
+    return not place_accepts
 
 
 # -- HTML stripper -----------------------------------------------------------

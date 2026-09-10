@@ -8,6 +8,7 @@ search configuration YAML (searches.yaml) rather than being hardcoded.
 """
 
 import logging
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -89,30 +90,31 @@ def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter.
 
-    Remote jobs are always accepted. Non-remote jobs must match an accept
-    pattern and not match a reject pattern.
+    A named region that is on the reject list (or, when the user gave an accept
+    list, any named region NOT on it) is rejected even if the posting says
+    "remote" — "remote" usually means "remote within that country". Only truly
+    location-agnostic remote ("Remote", "Anywhere", no country) always passes.
     """
     if not location:
         return True  # unknown location -- keep it, let scorer decide
 
     loc = location.lower()
+    _remote_tokens = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
+    place_accepts = [a.lower() for a in accept if a.lower() not in _remote_tokens]
 
-    # Remote jobs always OK
-    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
+    if any(a in loc for a in place_accepts):
         return True
+    if any(r.lower() in loc for r in reject):
+        return False
 
-    # Reject non-remote matches
-    for r in reject:
-        if r.lower() in loc:
-            return False
+    stripped = loc
+    for t in _remote_tokens:
+        stripped = stripped.replace(t, " ")
+    stripped = re.sub(r"[,/|()\-–—:;.\s]+", " ", stripped).strip()
+    if not stripped:
+        return True  # location-agnostic remote
 
-    # Accept matches
-    for a in accept:
-        if a.lower() in loc:
-            return True
-
-    # No match -- reject unknown
-    return False
+    return not place_accepts  # named unknown place: reject if the user gave an accept list
 
 
 # -- DB storage (JobSpy DataFrame -> SQLite) ---------------------------------

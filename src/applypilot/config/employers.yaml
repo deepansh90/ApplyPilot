@@ -184,11 +184,7 @@ employers:
     site_id: "External"
     base_url: "https://intel.wd1.myworkdayjobs.com"
 
-  adobe:
-    name: "Adobe"
-    tenant: "adobe"
-    site_id: "external_experienced"
-    base_url: "https://adobe.wd5.myworkdayjobs.com"
+  # adobe: removed — on the personal do-not-apply list (current employer)
 
   motorola:
     name: "Motorola Solutions"
@@ -208,11 +204,7 @@ employers:
     site_id: "M_tx"
     base_url: "https://modernatx.wd1.myworkdayjobs.com"
 
-  servicenow:
-    name: "ServiceNow"
-    tenant: "servicenow"
-    site_id: "ServiceNowCareers"
-    base_url: "https://servicenow.wd1.myworkdayjobs.com"
+  # servicenow: removed — on the personal do-not-apply list
 
   docusign:
     name: "DocuSign"
