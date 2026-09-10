@@ -50,6 +50,25 @@ def _load_location_filter(search_cfg: dict | None = None):
     return accept, reject
 
 
+_WD_REMOTE_TOKENS = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
+
+
+def _location_from_path(external_path: str | None) -> str:
+    """Recover a location from a Workday externalPath when locationsText is empty.
+
+    "/job/Warsaw---Poland/Senior-AI-Engineer_R19416" -> "Warsaw, Poland"
+    "/job/Bangalore-India/..."                        -> "Bangalore India"
+    """
+    if not external_path:
+        return ""
+    m = re.search(r"/job/([^/]+)/", external_path)
+    if not m:
+        return ""
+    seg = m.group(1).replace("---", ", ")
+    seg = re.sub(r"[-_]+", " ", seg)
+    return re.sub(r"\s+", " ", seg).strip()
+
+
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter.
 
@@ -57,15 +76,18 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     "Canada, Remote" is still rejected when `reject` contains "Canada"),
     unless the location also matches an accept pattern. This matters for
     non-US searches where "remote" usually means "remote *within that country*".
+    An empty/unknown location is rejected when the user gave an accept list
+    (Workday's search API sometimes omits locationsText — do not let those
+    through unfiltered; callers should fall back to _location_from_path first).
     """
-    if not location:
-        return True
-
-    loc = location.lower()
-    _remote_tokens = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
+    loc = (location or "").lower()
+    _remote_tokens = _WD_REMOTE_TOKENS
     # Real place-name accepts only — not the "remote"/"anywhere" tokens, otherwise
     # "Canada, Remote" would count as an accepted location.
     place_accepts = [a.lower() for a in accept if a.lower() not in _remote_tokens]
+
+    if not loc:
+        return not place_accepts
     matches_place_accept = any(a in loc for a in place_accepts)
 
     if matches_place_accept:
@@ -238,7 +260,7 @@ def search_employer(
             break
 
         for j in postings:
-            loc = j.get("locationsText", "")
+            loc = j.get("locationsText", "") or _location_from_path(j.get("externalPath", ""))
             if location_filter and accept_locs is not None and reject_locs is not None:
                 if not _location_ok(loc, accept_locs, reject_locs):
                     continue
