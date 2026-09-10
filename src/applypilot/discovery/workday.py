@@ -45,12 +45,16 @@ def _load_location_filter(search_cfg: dict | None = None):
     if search_cfg is None:
         search_cfg = config.load_search_config()
 
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
+    accept = list(search_cfg.get("location_accept", []))
+    reject = list(search_cfg.get("location_reject_non_remote", []))
     return accept, reject
 
 
 _WD_REMOTE_TOKENS = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
+
+# Set once by run_workday_discovery() from searches.yaml (home_country / country).
+# "<home_country>, Remote" then counts as location-agnostic remote.
+_HOME_COUNTRY: str | None = None
 
 
 def _location_from_path(external_path: str | None) -> str:
@@ -69,7 +73,12 @@ def _location_from_path(external_path: str | None) -> str:
     return re.sub(r"\s+", " ", seg).strip()
 
 
-def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
+def _location_ok(
+    location: str | None,
+    accept: list[str],
+    reject: list[str],
+    home_country: str | None = None,
+) -> bool:
     """Check if a job location passes the user's location filter.
 
     Note: a reject pattern wins even when the location says "remote" (e.g.
@@ -82,6 +91,8 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     """
     loc = (location or "").lower()
     _remote_tokens = _WD_REMOTE_TOKENS
+    if home_country is None:
+        home_country = _HOME_COUNTRY
     # Real place-name accepts only — not the "remote"/"anywhere" tokens, otherwise
     # "Canada, Remote" would count as an accepted location.
     place_accepts = [a.lower() for a in accept if a.lower() not in _remote_tokens]
@@ -98,11 +109,19 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     if any(a in loc for a in place_accepts):
         return True
 
-    # Strip remote/work-style tokens and separators; if nothing geographic remains,
-    # it's true location-agnostic remote → accept.
+    # Strip remote/work-style tokens (and the home country, if given) and
+    # separators. If nothing geographic remains it's location-agnostic remote —
+    # "Remote", "Anywhere", or "<home_country>, Remote" — → accept. A specific
+    # non-accepted city ("Bhopal, India") leaves a name behind → does not pass here.
     stripped = loc
     for t in _remote_tokens:
         stripped = stripped.replace(t, " ")
+    if home_country:
+        _is_remote = any(t in loc for t in _remote_tokens)
+        if _is_remote:
+            stripped = re.sub(
+                r"\b" + re.escape(home_country.lower()) + r"\b", " ", stripped
+            )
     stripped = re.sub(r"[,/|()\-–—:;.\s]+", " ", stripped).strip()
     if not stripped:
         return True
@@ -534,6 +553,9 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
     search_cfg = config.load_search_config()
     queries_cfg = search_cfg.get("queries", [])
     accept_locs, reject_locs = _load_location_filter(search_cfg)
+
+    global _HOME_COUNTRY
+    _HOME_COUNTRY = search_cfg.get("home_country") or search_cfg.get("country")
 
     # Default to tier 1-2 queries for workday scraping
     max_tier = search_cfg.get("workday_max_tier", 2)

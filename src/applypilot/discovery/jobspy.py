@@ -87,23 +87,27 @@ def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
     return accept, reject
 
 
+# Set once by run_discovery() from searches.yaml (home_country / country).
+_HOME_COUNTRY: str | None = None
+
+_JS_REMOTE_TOKENS = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
+
+
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter.
 
-    A named region that is on the reject list (or, when the user gave an accept
-    list, any named region NOT on it) is rejected even if the posting says
-    "remote" — "remote" usually means "remote within that country". Only truly
-    location-agnostic remote ("Remote", "Anywhere", no country) always passes.
+    Reject wins over accept. A named region not on the accept list is rejected
+    even if it says "remote" ("remote" usually means remote *within that
+    country*). Only geography-free remote ("Remote", "Anywhere") or
+    "<home_country>, Remote" always passes.
     """
     if not location:
         return True  # unknown location -- keep it, let scorer decide
 
     loc = location.lower()
-    _remote_tokens = ("remote", "anywhere", "work from home", "wfh", "distributed", "hybrid", "on-site", "onsite")
+    _remote_tokens = _JS_REMOTE_TOKENS
     place_accepts = [a.lower() for a in accept if a.lower() not in _remote_tokens]
 
-    # Reject wins over accept (so a broad accept like "India" doesn't re-admit a
-    # rejected metro like "Bangalore, India").
     if any(r.lower() in loc for r in reject):
         return False
     if any(a in loc for a in place_accepts):
@@ -112,9 +116,11 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     stripped = loc
     for t in _remote_tokens:
         stripped = stripped.replace(t, " ")
+    if _HOME_COUNTRY and any(t in loc for t in _remote_tokens):
+        stripped = re.sub(r"\b" + re.escape(_HOME_COUNTRY.lower()) + r"\b", " ", stripped)
     stripped = re.sub(r"[,/|()\-–—:;.\s]+", " ", stripped).strip()
     if not stripped:
-        return True  # location-agnostic remote
+        return True  # location-agnostic remote (incl. "<home_country>, Remote")
 
     return not place_accepts  # named unknown place: reject if the user gave an accept list
 
@@ -381,6 +387,9 @@ def _full_crawl(
     defaults = search_cfg.get("defaults", {})
     glassdoor_map = search_cfg.get("glassdoor_location_map", {})
     accept_locs, reject_locs = _load_location_config(search_cfg)
+
+    global _HOME_COUNTRY
+    _HOME_COUNTRY = search_cfg.get("home_country") or search_cfg.get("country")
 
     if tiers:
         queries = [q for q in queries if q.get("tier") in tiers]
