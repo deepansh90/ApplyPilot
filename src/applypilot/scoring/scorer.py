@@ -137,6 +137,10 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     errors = 0
     results: list[dict] = []
 
+    # Persist per job. The previous version buffered every result and committed
+    # once at the very end, so any interruption (rate-limit crash, kill, sleep)
+    # threw away the whole run and left fit_score NULL — and re-runs re-burned
+    # the API quota from scratch. Per-job commits make scoring durable + resumable.
     for job in jobs:
         result = score_job(resume_text, job)
         result["url"] = job["url"]
@@ -147,18 +151,22 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
 
         results.append(result)
 
+        try:
+            conn.execute(
+                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+                (result["score"], f"{result['keywords']}\n{result['reasoning']}",
+                 datetime.now(timezone.utc).isoformat(), result["url"]),
+            )
+            if completed % 5 == 0:
+                conn.commit()
+        except Exception as e:
+            log.warning("DB write failed for %s: %s", result["url"], e)
+
         log.info(
             "[%d/%d] score=%d  %s",
             completed, len(jobs), result["score"], job.get("title", "?")[:60],
         )
 
-    # Write scores to DB
-    now = datetime.now(timezone.utc).isoformat()
-    for r in results:
-        conn.execute(
-            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-            (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
-        )
     conn.commit()
 
     elapsed = time.time() - t0
