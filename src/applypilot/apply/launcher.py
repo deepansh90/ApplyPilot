@@ -367,6 +367,12 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     start = time.time()
     stats: dict = {}
     proc = None
+    watchdog = None
+    # Hard per-job ceiling. `for line in proc.stdout` below has no read timeout, so
+    # a hung agent (frozen browser, unsolvable CAPTCHA loop) would block the worker
+    # forever — proc.wait(timeout=300) is never reached. This kills the subprocess;
+    # the stdout loop then hits EOF and run_job returns "skipped".
+    JOB_HARD_TIMEOUT_S = int(os.environ.get("APPLYPILOT_JOB_TIMEOUT_S", "720"))
 
     try:
         proc = subprocess.Popen(
@@ -382,6 +388,16 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         )
         with _claude_lock:
             _claude_procs[worker_id] = proc
+
+        _pid = proc.pid
+
+        def _watchdog_kill() -> None:
+            add_event(f"[W{worker_id}] WATCHDOG kill after {JOB_HARD_TIMEOUT_S}s")
+            _kill_process_tree(_pid)
+
+        watchdog = threading.Timer(JOB_HARD_TIMEOUT_S, _watchdog_kill)
+        watchdog.daemon = True
+        watchdog.start()
 
         proc.stdin.write(agent_prompt)
         proc.stdin.close()
@@ -509,6 +525,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         update_state(worker_id, status="failed", last_action=f"ERROR: {str(e)[:25]}")
         return f"failed:{str(e)[:100]}", duration_ms
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
         with _claude_lock:
             _claude_procs.pop(worker_id, None)
         if proc is not None and proc.poll() is None:
