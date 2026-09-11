@@ -76,7 +76,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
     # otherwise the table reads "Showing 0 of 0 jobs" while the header says N jobs.
     if scored:
         jobs = conn.execute("""
-            SELECT url, title, salary, description, location, site, strategy,
+            SELECT url, title, salary, description, location, site, company, strategy,
                    full_description, application_url, detail_error,
                    fit_score, score_reasoning
             FROM jobs
@@ -85,7 +85,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
         """).fetchall()
     else:
         jobs = conn.execute("""
-            SELECT url, title, salary, description, location, site, strategy,
+            SELECT url, title, salary, description, location, site, company, strategy,
                    full_description, application_url, detail_error,
                    fit_score, score_reasoning
             FROM jobs
@@ -167,6 +167,12 @@ def generate_dashboard(output_path: str | None = None) -> str:
         site = escape(j["site"] or "")
         site_color = colors.get(j["site"] or "", "#6b7280")
         apply_url = escape(j["application_url"] or "")
+        # Company: jobspy rows (linkedin/indeed) carry it in `company`; Workday rows
+        # have `site` == the employer name and no separate `company`.
+        company_name = escape((j["company"] or j["site"] or "Unknown company").strip())
+        # Only show the source board as a secondary tag when it differs from the company
+        # (e.g. "linkedin" board vs. the actual hiring company) — otherwise it's redundant.
+        board_label = site if j["company"] and site.lower() != company_name.lower() else ""
 
         # Parse keywords and reasoning from score_reasoning
         reasoning_raw = j["score_reasoning"] or ""
@@ -180,8 +186,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
 
         meta_parts = []
         meta_parts.append(
-            f'<span class="meta-tag site-tag" style="background:{site_color}33;color:{site_color}">{site}</span>'
+            f'<span class="meta-tag company-tag" style="background:{site_color}33;color:{site_color}">{company_name}</span>'
         )
+        if board_label:
+            meta_parts.append(f'<span class="meta-tag board-tag">via {board_label}</span>')
         if salary:
             meta_parts.append(f'<span class="meta-tag salary">{salary}</span>')
         if location:
@@ -193,10 +201,13 @@ def generate_dashboard(output_path: str | None = None) -> str:
             apply_html = f'<a href="{apply_url}" class="apply-link" target="_blank">Apply</a>'
 
         job_sections += f"""
-        <div class="job-card" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}">
+        <div class="job-card" data-score="{score}" data-site="{escape(j['site'] or '')}" data-company="{company_name.lower()}" data-location="{location.lower()}">
           <div class="card-header">
             <span class="score-pill" style="background:{'#10b981' if score >= 7 else '#f59e0b'}">{score}</span>
-            <a href="{url}" class="job-title" target="_blank">{title}</a>
+            <div class="title-block">
+              <div class="company-name">{company_name}</div>
+              <a href="{url}" class="job-title" target="_blank">{title}</a>
+            </div>
           </div>
           <div class="meta-row">{meta_html}</div>
           {f'<div class="keywords-row">{escape(keywords)}</div>' if keywords else ''}
@@ -275,14 +286,18 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .job-card[data-score="6"] {{ border-left-color: #f59e0b; }}
   .job-card[data-score="5"] {{ border-left-color: #f59e0b88; }}
 
-  .card-header {{ display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }}
-  .score-pill {{ display: inline-flex; align-items: center; justify-content: center; min-width: 1.6rem; height: 1.6rem; border-radius: 6px; color: #0f172a; font-weight: 700; font-size: 0.8rem; flex-shrink: 0; }}
+  .card-header {{ display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.5rem; }}
+  .score-pill {{ display: inline-flex; align-items: center; justify-content: center; min-width: 1.6rem; height: 1.6rem; border-radius: 6px; color: #0f172a; font-weight: 700; font-size: 0.8rem; flex-shrink: 0; margin-top: 0.1rem; }}
+  .title-block {{ display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }}
+  .company-name {{ font-weight: 700; font-size: 0.8rem; color: #cbd5e1; letter-spacing: 0.01em; }}
 
   .job-title {{ color: #e2e8f0; text-decoration: none; font-weight: 600; font-size: 0.95rem; }}
   .job-title:hover {{ color: #60a5fa; }}
 
   .meta-row {{ display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.4rem; }}
   .meta-tag {{ font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: #334155; color: #94a3b8; }}
+  .meta-tag.company-tag {{ font-weight: 600; }}
+  .meta-tag.board-tag {{ background: #1e293b; color: #64748b; font-style: italic; }}
   .meta-tag.salary {{ background: #064e3b; color: #6ee7b7; }}
   .meta-tag.location {{ background: #1e3a5f; color: #93c5fd; }}
 

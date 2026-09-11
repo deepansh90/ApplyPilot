@@ -133,14 +133,23 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
     new = 0
     existing = 0
 
+    def _clean(v) -> str | None:
+        """str(v) but treats pandas NaN *and* Python None as "no value" instead
+        of storing the literal text "nan" / "None" (root cause of the broken
+        "file:///.../None" apply links)."""
+        if v is None:
+            return None
+        s = str(v).strip()
+        return None if s.lower() in ("", "nan", "none") else s
+
     for _, row in df.iterrows():
         url = str(row.get("job_url", ""))
         if not url or url == "nan":
             continue
 
-        title = str(row.get("title", "")) if str(row.get("title", "")) != "nan" else None
-        company = str(row.get("company", "")) if str(row.get("company", "")) != "nan" else None
-        location_str = str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None
+        title = _clean(row.get("title"))
+        company = _clean(row.get("company"))
+        location_str = _clean(row.get("location"))
 
         # Build salary string from min/max
         salary = None
@@ -173,15 +182,16 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
             full_description = description
             detail_scraped_at = now
 
-        # Extract apply URL if JobSpy provided it
-        apply_url = str(row.get("job_url_direct", "")) if str(row.get("job_url_direct", "")) != "nan" else None
+        # Extract apply URL if JobSpy provided a direct one; otherwise the listing's
+        # own URL *is* the apply link (LinkedIn/Indeed users apply from that page).
+        apply_url = _clean(row.get("job_url_direct")) or url
 
         try:
             conn.execute(
-                "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at, "
-                "full_description, application_url, detail_scraped_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (url, title, salary, description, location_str, site_label, strategy, now,
+                "INSERT INTO jobs (url, title, salary, description, location, site, company, strategy, "
+                "discovered_at, full_description, application_url, detail_scraped_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (url, title, salary, description, location_str, site_label, company, strategy, now,
                  full_description, apply_url, detail_scraped_at),
             )
             new += 1

@@ -96,6 +96,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             description           TEXT,
             location              TEXT,
             site                  TEXT,
+            company               TEXT,
             strategy              TEXT,
             discovered_at         TEXT,
 
@@ -151,6 +152,7 @@ _ALL_COLUMNS: dict[str, str] = {
     "description": "TEXT",
     "location": "TEXT",
     "site": "TEXT",
+    "company": "TEXT",
     "strategy": "TEXT",
     "discovered_at": "TEXT",
     # Enrichment

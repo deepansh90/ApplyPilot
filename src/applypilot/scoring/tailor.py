@@ -68,53 +68,29 @@ def _build_tailor_prompt(profile: dict) -> str:
     education = profile.get("experience", {})
     education_level = education.get("education_level", "")
 
-    return f"""You are a senior technical recruiter rewriting a resume to get this person an interview.
+    return f"""You are a senior technical recruiter providing strategic resume modifications for a target job.
+    
+Take the base resume and job description. Return a 'Tailoring Delta Report' as a JSON object.
 
-Take the base resume and job description. Return a tailored resume as a JSON object.
+## STRATEGY: 
+Instead of a full rewrite, identify the 2-3 most critical changes needed to match this job's seniority and domain.
 
-## RECRUITER SCAN (6 seconds):
-1. Title -- matches what they're hiring?
-2. Summary -- 2 sentences proving you've done this work
-3. First 3 bullets of most recent role -- verbs and outcomes match?
-4. Skills -- must-haves visible immediately?
-
-## SKILLS BOUNDARY (real skills only):
-{skills_block}
-
-You MAY add 2-3 closely related tools (Kubernetes if Docker, Terraform if AWS, Redis if PostgreSQL). No unrelated languages/frameworks.
-
-## TAILORING RULES:
-
-TITLE: Match the target role. Keep seniority (Senior/Lead/Staff). Drop company suffixes and team names.
-
-SUMMARY: Rewrite from scratch. Lead with the 1-2 skills that matter most for THIS role. Sound like someone who's done this job.
-
-SKILLS: Reorder each category so the job's must-haves appear first.
-
-Reframe EVERY bullet for this role. Same real work, different angle. Every bullet must be reworded. Never copy verbatim.
-
-PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
-
-BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, Designed, Implemented, Reduced, Automated, Deployed, Operated, Optimized). Most relevant first. Max 4 per section.
+## REQUIRED JSON FIELDS:
+- target_keywords: 3-5 must-have ATS terms for this role.
+- summary_pivot: Exactly 2 sentences replacing the current summary to lead with the job's priority skills.
+- experience_tweaks: A list of 2-3 specific recommendations for existing bullets (e.g., "In Role X, change Bullet 2 to focus on [Skill] instead of [Skill]").
+- overall_strategy: 1 sentence on the 'voice' or 'angle' for this application.
 
 ## VOICE:
-- Write like a real engineer. Short, direct.
-- GOOD: "Automated financial reporting with Python + API integrations, cut processing time from 10 hours to 2"
-- BAD: "Leveraged cutting-edge AI technologies to drive transformative operational efficiencies"
-- BANNED WORDS (using ANY of these = validation failure — do not use them even once):
-  {banned_str}
-- No em dashes. Use commas, periods, or hyphens.
+- Direct, engineering-led. No buzzwords.
+- GOOD: "Emphasize high-scale orchestration over generic backend work."
 
 ## HARD RULES:
-- Do NOT invent work, companies, degrees, or certifications
-- Do NOT change real numbers ({metrics_str})
-- Preserved companies: {companies_str} -- names stay as-is
-- Preserved school: {school}
-- Must fit 1 page.
+- Do NOT invent metrics or degrees.
+- Preserved Companies: {companies_str}
 
-## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
-
-{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":"{school} | {education_level}"}}"""
+## OUTPUT: Return ONLY valid JSON.
+{{"target_keywords":["..."],"summary_pivot":"...","experience_tweaks":["..."],"overall_strategy":"..."}}"""
 
 
 def _build_judge_prompt(profile: dict) -> str:
@@ -221,79 +197,29 @@ def extract_json(raw: str) -> dict:
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
 
 def assemble_resume_text(data: dict, profile: dict) -> str:
-    """Convert JSON resume data to formatted plain text.
-
-    Header (name, location, contact) is ALWAYS code-injected from the profile,
-    never LLM-generated. All text fields are sanitized.
-
-    Args:
-        data: Parsed JSON resume from the LLM.
-        profile: User profile dict from load_profile().
-
-    Returns:
-        Formatted resume text.
-    """
-    personal = profile.get("personal", {})
+    """Convert JSON Delta data to a formatted report."""
     lines: list[str] = []
-
-    # Header -- always code-injected from profile
-    lines.append(personal.get("full_name", ""))
-    lines.append(sanitize_text(data.get("title", "Software Engineer")))
-
-    # Location from search config or profile -- leave blank if not available
-    # The location line is optional; the original used a hardcoded city.
-    # We omit it here; the LLM prompt can include it if the user sets it.
-
-    # Contact line
-    contact_parts: list[str] = []
-    if personal.get("email"):
-        contact_parts.append(personal["email"])
-    if personal.get("phone"):
-        contact_parts.append(personal["phone"])
-    if personal.get("github_url"):
-        contact_parts.append(personal["github_url"])
-    if personal.get("linkedin_url"):
-        contact_parts.append(personal["linkedin_url"])
-    if contact_parts:
-        lines.append(" | ".join(contact_parts))
+    lines.append("# Tailoring Delta Report")
+    lines.append(f"Target: {data.get('target_keywords', [])[0] if data.get('target_keywords') else 'N/A'}")
     lines.append("")
-
-    # Summary
-    lines.append("SUMMARY")
-    lines.append(sanitize_text(data["summary"]))
+    
+    lines.append("### 1. ATS Keywords")
+    for kw in data.get("target_keywords", []):
+        lines.append(f"- {kw}")
     lines.append("")
-
-    # Technical Skills
-    lines.append("TECHNICAL SKILLS")
-    if isinstance(data["skills"], dict):
-        for cat, val in data["skills"].items():
-            lines.append(f"{cat}: {sanitize_text(str(val))}")
+    
+    lines.append("### 2. Summary Pivot (Update this section)")
+    lines.append(sanitize_text(data.get("summary_pivot", "")))
     lines.append("")
-
-    # Experience
-    lines.append("EXPERIENCE")
-    for entry in data.get("experience", []):
-        lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            lines.append(f"- {sanitize_text(b)}")
-        lines.append("")
-
-    # Projects
-    lines.append("PROJECTS")
-    for entry in data.get("projects", []):
-        lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            lines.append(f"- {sanitize_text(b)}")
-        lines.append("")
-
-    # Education
-    lines.append("EDUCATION")
-    lines.append(sanitize_text(str(data.get("education", ""))))
-
+    
+    lines.append("### 3. Experience Tweaks")
+    for tweak in data.get("experience_tweaks", []):
+        lines.append(f"- {tweak}")
+    lines.append("")
+    
+    lines.append("### 4. Overall Strategy")
+    lines.append(sanitize_text(data.get("overall_strategy", "")))
+    
     return "\n".join(lines)
 
 
