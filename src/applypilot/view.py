@@ -17,10 +17,17 @@ from pathlib import Path
 
 from rich.console import Console
 
-from applypilot.config import APP_DIR, DB_PATH
+from applypilot.config import APP_DIR, DB_PATH, load_search_config
 from applypilot.database import get_connection
 
 console = Console()
+
+
+def _priority_companies() -> list[str]:
+    try:
+        return [str(c).lower() for c in (load_search_config().get("priority_companies") or [])]
+    except Exception:
+        return []
 
 
 def generate_dashboard(output_path: str | None = None) -> str:
@@ -35,6 +42,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
     out = Path(output_path) if output_path else APP_DIR / "dashboard.html"
 
     conn = get_connection()
+    priority = _priority_companies()
 
     # Stats
     total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
@@ -173,6 +181,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
         # Only show the source board as a secondary tag when it differs from the company
         # (e.g. "linkedin" board vs. the actual hiring company) — otherwise it's redundant.
         board_label = site if j["company"] and site.lower() != company_name.lower() else ""
+        is_priority = any(p in company_name.lower() for p in priority)
 
         # Parse keywords and reasoning from score_reasoning
         reasoning_raw = j["score_reasoning"] or ""
@@ -188,6 +197,8 @@ def generate_dashboard(output_path: str | None = None) -> str:
         meta_parts.append(
             f'<span class="meta-tag company-tag" style="background:{site_color}33;color:{site_color}">{company_name}</span>'
         )
+        if is_priority:
+            meta_parts.append('<span class="meta-tag priority-tag">&#9733; Must-Apply</span>')
         if board_label:
             meta_parts.append(f'<span class="meta-tag board-tag">via {board_label}</span>')
         if salary:
@@ -201,11 +212,11 @@ def generate_dashboard(output_path: str | None = None) -> str:
             apply_html = f'<a href="{apply_url}" class="apply-link" target="_blank">Apply</a>'
 
         job_sections += f"""
-        <div class="job-card" data-score="{score}" data-site="{escape(j['site'] or '')}" data-company="{company_name.lower()}" data-location="{location.lower()}">
+        <div class="job-card{' priority-card' if is_priority else ''}" data-score="{score}" data-site="{escape(j['site'] or '')}" data-company="{company_name.lower()}" data-location="{location.lower()}" data-priority="{'1' if is_priority else '0'}">
           <div class="card-header">
             <span class="score-pill" style="background:{'#10b981' if score >= 7 else '#f59e0b'}">{score}</span>
             <div class="title-block">
-              <div class="company-name">{company_name}</div>
+              <div class="company-name">{'&#9733; ' if is_priority else ''}{company_name}</div>
               <a href="{url}" class="job-title" target="_blank">{title}</a>
             </div>
           </div>
@@ -298,8 +309,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .meta-tag {{ font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: #334155; color: #94a3b8; }}
   .meta-tag.company-tag {{ font-weight: 600; }}
   .meta-tag.board-tag {{ background: #1e293b; color: #64748b; font-style: italic; }}
+  .meta-tag.priority-tag {{ background: #78350f; color: #fbbf24; font-weight: 700; }}
   .meta-tag.salary {{ background: #064e3b; color: #6ee7b7; }}
   .meta-tag.location {{ background: #1e3a5f; color: #93c5fd; }}
+  .job-card.priority-card {{ border: 1px solid #fbbf2455; }}
 
   .keywords-row {{ font-size: 0.75rem; color: #10b981; margin-bottom: 0.3rem; line-height: 1.4; }}
   .reasoning-row {{ font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.5rem; font-style: italic; line-height: 1.4; }}
@@ -347,6 +360,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
   <button class="filter-btn" onclick="filterScore(7)">7+ Strong</button>
   <button class="filter-btn" onclick="filterScore(8)">8+ Excellent</button>
   <button class="filter-btn" onclick="filterScore(9)">9+ Perfect</button>
+  <button class="filter-btn" id="priority-btn" onclick="togglePriority()" style="margin-left:0.5rem">&#9733; Must-Apply only</button>
   <span class="filter-label" style="margin-left:1rem">Search:</span>
   <input type="text" class="search-input" placeholder="Filter by title, site..." oninput="filterText(this.value)">
 </div>
@@ -369,11 +383,18 @@ def generate_dashboard(output_path: str | None = None) -> str:
 <script>
 let minScore = 0;
 let searchText = '';
+let priorityOnly = false;
 
 function filterScore(min) {{
   minScore = min;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.filter-btn').forEach(b => {{ if (b.id !== 'priority-btn') b.classList.remove('active'); }});
   event.target.classList.add('active');
+  applyFilters();
+}}
+
+function togglePriority() {{
+  priorityOnly = !priorityOnly;
+  document.getElementById('priority-btn').classList.toggle('active', priorityOnly);
   applyFilters();
 }}
 
@@ -390,8 +411,9 @@ function applyFilters() {{
     const score = parseInt(card.dataset.score) || 0;
     const text = card.textContent.toLowerCase();
     const scoreMatch = score >= minScore;
+    const priorityMatch = !priorityOnly || card.dataset.priority === '1';
     const textMatch = !searchText || text.includes(searchText);
-    if (scoreMatch && textMatch) {{
+    if (scoreMatch && priorityMatch && textMatch) {{
       card.classList.remove('hidden');
       shown++;
     }} else {{
