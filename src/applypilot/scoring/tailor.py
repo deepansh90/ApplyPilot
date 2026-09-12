@@ -211,7 +211,7 @@ def assemble_resume_text(data: dict, profile: dict, resume_text: str) -> str:
     """Assemble a complete, real, submittable resume for this job.
 
     BUG FIX: this used to return only the LLM's meta "Tailoring Delta Report"
-    (a short list of *suggestions* like "In the Adobe AJO role, reframe the
+    (a short list of *suggestions* like "In the <Company X> role, reframe the
     bullet on microservices...") with no contact header, no skills, no work
     experience -- effectively a near-blank page. That text/PDF is exactly what
     apply/prompt.py uploads as the candidate's actual resume to real employers.
