@@ -104,16 +104,29 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
         conn.execute("BEGIN IMMEDIATE")
 
         if target_url:
-            like = f"%{target_url.split('?')[0].rstrip('/')}%"
+            # Exact match only. The previous version fell back to a LIKE pattern built
+            # from the URL with its query string stripped
+            # (f"%{target_url.split('?')[0]}%") -- but on Indeed/LinkedIn the query
+            # string *is* the job identity (?jk=..., currentJobId=...), so the pattern
+            # collapsed to e.g. "%indeed.com/viewjob%", matching every Indeed job in
+            # the DB. OR'd into one query with LIMIT 1 and no ORDER BY, SQLite could
+            # return an arbitrary row -- i.e. `apply --url <job A>` could silently
+            # target and submit to job B. No safe substring fallback replaces it: if
+            # the exact URL isn't found, that's a real "no match", not a hint to guess.
+            #
+            # `apply_status != 'in_progress'` was also NULL-unsafe: for a job that has
+            # never been touched (apply_status IS NULL), `NULL != 'in_progress'`
+            # evaluates to NULL (not true) in SQL, so the row was excluded here -- the
+            # one case this branch most needs to find.
             row = conn.execute("""
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
-                WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
+                WHERE (url = ? OR application_url = ?)
                   AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND (apply_status IS NULL OR apply_status = 'failed')
                 LIMIT 1
-            """, (target_url, target_url, like, like)).fetchone()
+            """, (target_url, target_url)).fetchone()
         else:
             blocked_sites, blocked_patterns = _load_blocked()
             # Build parameterized filters to avoid SQL injection
@@ -626,6 +639,15 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
                 continue
+            elif result == "applied" and dry_run:
+                # Per the dry-run prompt instructions the agent reports RESULT:APPLIED
+                # for a successful *preview* too. Writing apply_status='applied' here
+                # would permanently remove the job from the real queue even though
+                # nothing was submitted -- release the lock instead so it's still
+                # eligible for a real run.
+                release_lock(job["url"])
+                add_event(f"[W{worker_id}] DRY RUN OK (not marked applied): {job['title'][:30]}")
+                update_state(worker_id, jobs_done=applied + failed)
             elif result == "applied":
                 mark_result(job["url"], "applied", duration_ms=duration_ms)
                 applied += 1
