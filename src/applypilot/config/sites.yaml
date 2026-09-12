@@ -17,12 +17,22 @@ blocked:
     - "accenture"
     - "AccentureCareers"
     - "Workopolis"
+    # LinkedIn-sourced jobs have application_url == the LinkedIn job-view page
+    # itself (not the employer's real ATS), which requires an authenticated
+    # LinkedIn session to progress past. This apply agent has no LinkedIn
+    # login (that's the separate, dedicated LinkedIn Easy Apply bot) -- every
+    # one of these was a guaranteed 100% failure (confirmed: 10/10 failed,
+    # all hitting LinkedIn's sign-in wall). Discovery via jobspy's "linkedin"
+    # board is still fine for scoring/dashboard visibility; just excluded
+    # from the auto-apply queue.
+    - "linkedin"
   url_patterns:
     - "%glassdoor%"
     - "%google.com/about/careers%"
     - "%google.jobs%"
     - "%accenture%"
     - "%workopolis.com/out%"
+    - "%linkedin.com/jobs/view%"
 
 # ── Blocked SSO domains — cannot authenticate through these ──────────────
 blocked_sso:
