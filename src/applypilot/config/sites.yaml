@@ -4,10 +4,29 @@
 # Use {query_encoded} placeholder for search terms (URL-encoded).
 
 # ── Manual-Only ATS Domains ──────────────────────────────────────────────
-# These ATS platforms have unsolvable CAPTCHAs. Jobs routing through them
-# are flagged as "manual" during apply — bot skips, user applies by hand.
+# These ATS platforms have unsolvable CAPTCHAs, or require creating a real
+# candidate-portal account with a real password before an application can even
+# start. Jobs routing through them are flagged "manual" during apply — bot
+# skips (never attempts account creation or CAPTCHA-solving), user applies by
+# hand.
 manual_ats:
   - "ibegin.tcsapps.com"       # TCS iBegin — unsolvable CAPTCHA every time
+  - "myworkdayjobs.com"        # Every Workday tenant's candidate portal (e.g.
+                               # pwc.wd3.myworkdayjobs.com, salesforce.wd12...,
+                               # mastercard.wd1..., nvidia.wd5..., cisco.wd5...)
+                               # requires "Create Account/Sign In" as literally
+                               # step 1 -- a real account + real password, or
+                               # employer SSO (nvidia.wd5 confirmed failing with
+                               # sso_required). Confirmed live: repeated
+                               # automated account-creation attempts (one per
+                               # PwC job posting) got the candidate account
+                               # locked out. Substring-matches every tenant
+                               # subdomain, so this one entry covers all of
+                               # them, present and future. Account creation and
+                               # password entry are never something this bot
+                               # should do unsupervised -- flag for manual
+                               # application instead, same as an unsolvable
+                               # CAPTCHA.
 
 # ── Blocked sites — too problematic for automation ───────────────────────
 blocked:

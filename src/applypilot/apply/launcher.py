@@ -155,12 +155,25 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                     "AND (company IS NULL OR LOWER(company) NOT LIKE ?)" for _ in excluded_companies
                 )
                 params.extend(f"%{c.lower()}%" for c in excluded_companies)
+            # A job stays 'in_progress' only while a worker is actively on it, released
+            # back to NULL on completion (release_lock / mark_result). If the process
+            # is killed mid-job (Ctrl+C, crash, SIGTERM) that release never happens,
+            # and the job was previously invisible to every future run forever --
+            # confirmed live: a Ctrl+C during a stuck PwC attempt left it wedged in
+            # 'in_progress' with no path back to the retry queue. Treat an in_progress
+            # row whose last_attempted_at is older than 3x the per-job timeout as
+            # abandoned and eligible again, rather than a permanent lock.
+            stale_after_s = config.DEFAULTS["apply_timeout"] * 3
             row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
                 WHERE tailored_resume_path IS NOT NULL
-                  AND (apply_status IS NULL OR apply_status = 'failed')
+                  AND (
+                    apply_status IS NULL
+                    OR apply_status = 'failed'
+                    OR (apply_status = 'in_progress' AND last_attempted_at < datetime('now', '-' || ? || ' seconds'))
+                  )
                   AND (apply_attempts IS NULL OR apply_attempts < ?)
                   AND fit_score >= ?
                   {site_clause}
@@ -168,7 +181,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                   {company_clause}
                 ORDER BY fit_score DESC, url
                 LIMIT 1
-            """, [config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
+            """, [stale_after_s, config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
 
         if not row:
             conn.rollback()
