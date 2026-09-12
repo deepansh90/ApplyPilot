@@ -412,19 +412,41 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         where += " AND fit_score >= ?"
         params.append(min_score)
 
-    # Exclude sites the apply step can never actually apply to (e.g. "linkedin" --
-    # its application_url is the LinkedIn job-view page itself, which needs an
-    # authenticated LinkedIn session this apply agent doesn't have). Without this,
+    # Exclude everything the apply step can never actually apply to. Without this,
     # tailoring/cover/pdf keep spending real LLM calls on resumes for jobs that
-    # acquire_job() will just skip at apply time anyway -- confirmed: a job got
-    # re-tailored here right after being blocked from the apply queue.
+    # acquire_job() will just skip (or route to manual) at apply time anyway --
+    # confirmed live for each of these three cases independently.
     if stage == "pending_tailor":
-        from applypilot.config import load_blocked_sites
+        from applypilot.config import load_blocked_sites, load_excluded_companies, load_sites_config
+
+        # 1. Blocked sites (e.g. "linkedin" -- application_url is the LinkedIn
+        # job-view page itself, needing an authenticated session this apply agent
+        # doesn't have).
         blocked_sites, _ = load_blocked_sites()
         if blocked_sites:
             placeholders = ",".join("?" * len(blocked_sites))
             where += f" AND site NOT IN ({placeholders})"
             params.extend(blocked_sites)
+
+        # 2. Excluded companies (e.g. current/past employer) -- confirmed live: a
+        # Google posting stayed in this queue after being added to exclude_companies,
+        # since that filter previously only applied at apply time.
+        excluded_companies = load_excluded_companies()
+        if excluded_companies:
+            where += " " + " ".join(
+                "AND (company IS NULL OR LOWER(company) NOT LIKE ?)" for _ in excluded_companies
+            )
+            params.extend(f"%{c.lower()}%" for c in excluded_companies)
+
+        # 3. manual_ats domains (Workday, Taleo, Oracle Cloud, unsolvable-CAPTCHA
+        # sites, etc.) -- confirmed live: an NVIDIA Workday posting stayed in this
+        # queue after being marked manual-only.
+        manual_domains = load_sites_config().get("manual_ats", [])
+        if manual_domains:
+            where += " " + " ".join(
+                "AND (application_url IS NULL OR application_url NOT LIKE ?)" for _ in manual_domains
+            )
+            params.extend(f"%{d}%" for d in manual_domains)
 
     query = f"SELECT * FROM jobs WHERE {where} ORDER BY fit_score DESC NULLS LAST, discovered_at DESC"
     if limit > 0:
