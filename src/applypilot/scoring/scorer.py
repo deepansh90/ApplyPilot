@@ -337,19 +337,33 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
         for job, result in zip(chunk, chunk_results):
             result["url"] = job["url"]
             completed += 1
-            if result["score"] == 0:
+            is_error = result["score"] == 0
+            if is_error:
                 errors += 1
             if result.get("cached"):
                 _n_cache += 1
             results.append(result)
-            try:
-                conn.execute(
-                    "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-                    (result["score"], f"{result['keywords']}\n{result['reasoning']}",
-                     datetime.now(timezone.utc).isoformat(), result["url"]),
-                )
-            except Exception as e:
-                log.warning("DB write failed for %s: %s", result["url"], e)
+            # BUG FIX: score=0 is exclusively the error sentinel (score_job/
+            # score_jobs_batch's "no result"/LLM-error fallback) -- never a real LLM
+            # score (the scale is 1-10, and the cache itself only ever treats
+            # `score > 0` as valid). Writing it to fit_score anyway permanently
+            # removed the job from "pending_score" (fit_score IS NULL), so a transient
+            # LLM outage (missing key, rate limit, network blip) silently and
+            # irreversibly poisoned every job scored during it -- confirmed live: 120
+            # jobs stuck at fit_score=0 after a provider-config error, invisible to
+            # every future scoring run. Leave fit_score untouched (NULL) on error so
+            # the job stays eligible for retry.
+            if is_error:
+                log.warning("Skipping DB write for '%s' (score=0 = LLM error, not a real score) — will retry next run", job.get("title", "?"))
+            else:
+                try:
+                    conn.execute(
+                        "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+                        (result["score"], f"{result['keywords']}\n{result['reasoning']}",
+                         datetime.now(timezone.utc).isoformat(), result["url"]),
+                    )
+                except Exception as e:
+                    log.warning("DB write failed for %s: %s", result["url"], e)
             log.info(
                 "[%d/%d] score=%d%s  %s",
                 completed, len(jobs), result["score"],

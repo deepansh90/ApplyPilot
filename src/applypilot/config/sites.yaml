@@ -27,6 +27,14 @@ manual_ats:
                                # should do unsupervised -- flag for manual
                                # application instead, same as an unsolvable
                                # CAPTCHA.
+  - "taleo.net"                # Oracle Taleo -- same "create candidate account
+                               # first" pattern as Workday, same lockout risk.
+                               # Not yet triggered live, blocked proactively
+                               # before it recurs on a different ATS.
+  - "oraclecloud.com"          # Oracle Fusion Cloud Recruiting (Taleo's
+                               # successor product, same vendor/pattern) --
+                               # e.g. *.fa.ca3.oraclecloud.com candidate
+                               # portals. Same account-creation risk.
 
 # ── Blocked sites — too problematic for automation ───────────────────────
 blocked:

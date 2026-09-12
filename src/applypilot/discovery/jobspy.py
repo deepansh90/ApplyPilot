@@ -484,7 +484,13 @@ def run_discovery(cfg: dict | None = None) -> dict:
         return {"new": 0, "existing": 0, "errors": 0, "db_total": 0, "queries": 0}
 
     proxy = cfg.get("proxy")
-    sites = cfg.get("sites")
+    # BUG FIX: searches.yaml's actual key is "boards" (see the shipped example and
+    # every user config), not "sites" -- this always returned None, silently falling
+    # back to _full_crawl's hardcoded ["indeed", "linkedin", "zip_recruiter"] default
+    # and ignoring the user's configured board list entirely. Confirmed live: a
+    # config of `boards: [indeed, linkedin]` still hammered ZipRecruiter 17 times
+    # (all 403s) while "indeed" never ran at all.
+    sites = cfg.get("boards") or cfg.get("sites")
     results_per_site = cfg.get("defaults", {}).get("results_per_site", 100)
     hours_old = cfg.get("defaults", {}).get("hours_old", 72)
     tiers = cfg.get("tiers")
