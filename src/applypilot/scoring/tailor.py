@@ -196,31 +196,60 @@ def extract_json(raw: str) -> dict:
 
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
 
-def assemble_resume_text(data: dict, profile: dict) -> str:
-    """Convert JSON Delta data to a formatted report."""
-    lines: list[str] = []
-    lines.append("# Tailoring Delta Report")
-    lines.append(f"Target: {data.get('target_keywords', [])[0] if data.get('target_keywords') else 'N/A'}")
-    lines.append("")
-    
-    lines.append("### 1. ATS Keywords")
-    for kw in data.get("target_keywords", []):
-        lines.append(f"- {kw}")
-    lines.append("")
-    
-    lines.append("### 2. Summary Pivot (Update this section)")
-    lines.append(sanitize_text(data.get("summary_pivot", "")))
-    lines.append("")
-    
-    lines.append("### 3. Experience Tweaks")
-    for tweak in data.get("experience_tweaks", []):
-        lines.append(f"- {tweak}")
-    lines.append("")
-    
-    lines.append("### 4. Overall Strategy")
-    lines.append(sanitize_text(data.get("overall_strategy", "")))
-    
-    return "\n".join(lines)
+def _is_section_header(line: str) -> bool:
+    """Heuristic: a resume section header is a non-empty, non-bullet line
+    that's entirely uppercase letters/punctuation/whitespace (e.g. "SUMMARY",
+    "TECHNICAL SKILLS", "WORK EXPERIENCE")."""
+    s = line.strip()
+    if not s or s.startswith(("•", "-", "–", "*")):
+        return False
+    letters = [c for c in s if c.isalpha()]
+    return bool(letters) and all(c.isupper() for c in letters)
+
+
+def assemble_resume_text(data: dict, profile: dict, resume_text: str) -> str:
+    """Assemble a complete, real, submittable resume for this job.
+
+    BUG FIX: this used to return only the LLM's meta "Tailoring Delta Report"
+    (a short list of *suggestions* like "In the Adobe AJO role, reframe the
+    bullet on microservices...") with no contact header, no skills, no work
+    experience -- effectively a near-blank page. That text/PDF is exactly what
+    apply/prompt.py uploads as the candidate's actual resume to real employers.
+
+    The LLM here only ever returns high-level guidance (a 2-sentence summary
+    pivot + short textual tweak suggestions), never full rewritten bullets --
+    so anything beyond the summary must come from the real base resume, not be
+    invented from those suggestions. Fix: keep the entire original resume
+    (header, skills, experience, education, honors, patents) verbatim, and
+    only replace the SUMMARY section with the tailored `summary_pivot`, with
+    the job's ATS `target_keywords` surfaced as a "Core Competencies" line
+    right after it.
+    """
+    summary_pivot = sanitize_text(data.get("summary_pivot", "")).strip()
+    keywords = [k for k in (data.get("target_keywords") or []) if k]
+
+    lines = resume_text.splitlines()
+    try:
+        start = next(i for i, l in enumerate(lines) if l.strip().upper() == "SUMMARY")
+    except StopIteration:
+        start = None
+
+    if start is None or not summary_pivot:
+        # No recognizable SUMMARY section (or the LLM gave nothing usable) --
+        # return the original resume untouched rather than risk producing a
+        # broken/incomplete document.
+        return resume_text
+
+    end = start + 1
+    while end < len(lines) and not _is_section_header(lines[end]):
+        end += 1
+
+    new_summary_block = [summary_pivot]
+    if keywords:
+        new_summary_block.append("Core Competencies (this role): " + ", ".join(keywords))
+
+    new_lines = lines[: start + 1] + new_summary_block + lines[end:]
+    return "\n".join(new_lines)
 
 
 # ── LLM Judge ────────────────────────────────────────────────────────────
@@ -345,12 +374,12 @@ def tailor_resume(
             if attempt < max_retries:
                 continue
             # Last attempt — assemble whatever we got
-            tailored = assemble_resume_text(data, profile)
+            tailored = assemble_resume_text(data, profile, resume_text)
             report["status"] = "failed_validation"
             return tailored, report
 
         # Assemble text (header injected by code, em dashes auto-fixed)
-        tailored = assemble_resume_text(data, profile)
+        tailored = assemble_resume_text(data, profile, resume_text)
 
         # Layer 2: LLM judge (catches subtle fabrication) — skipped in lenient mode
         if validation_mode == "lenient":

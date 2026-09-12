@@ -43,6 +43,11 @@ def _load_blocked():
     from applypilot.config import load_blocked_sites
     return load_blocked_sites()
 
+
+def _load_excluded_companies():
+    from applypilot.config import load_excluded_companies
+    return load_excluded_companies()
+
 # How often to poll the DB when the queue is empty (seconds)
 POLL_INTERVAL = config.DEFAULTS["poll_interval"]
 
@@ -129,6 +134,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             """, (target_url, target_url)).fetchone()
         else:
             blocked_sites, blocked_patterns = _load_blocked()
+            excluded_companies = _load_excluded_companies()
             # Build parameterized filters to avoid SQL injection
             params: list = [min_score]
             site_clause = ""
@@ -140,6 +146,15 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             if blocked_patterns:
                 url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
                 params.extend(blocked_patterns)
+            company_clause = ""
+            if excluded_companies:
+                # Case-insensitive substring exclusion (e.g. "Google" also blocks "Google
+                # Cloud"). company can be NULL for some rows (e.g. some Workday postings)
+                # -- those are never excluded here, matching the LinkedIn bot's behavior.
+                company_clause = " ".join(
+                    "AND (company IS NULL OR LOWER(company) NOT LIKE ?)" for _ in excluded_companies
+                )
+                params.extend(f"%{c.lower()}%" for c in excluded_companies)
             row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
@@ -150,6 +165,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                   AND fit_score >= ?
                   {site_clause}
                   {url_clauses}
+                  {company_clause}
                 ORDER BY fit_score DESC, url
                 LIMIT 1
             """, [config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
