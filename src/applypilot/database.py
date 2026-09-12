@@ -412,6 +412,20 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         where += " AND fit_score >= ?"
         params.append(min_score)
 
+    # Exclude sites the apply step can never actually apply to (e.g. "linkedin" --
+    # its application_url is the LinkedIn job-view page itself, which needs an
+    # authenticated LinkedIn session this apply agent doesn't have). Without this,
+    # tailoring/cover/pdf keep spending real LLM calls on resumes for jobs that
+    # acquire_job() will just skip at apply time anyway -- confirmed: a job got
+    # re-tailored here right after being blocked from the apply queue.
+    if stage == "pending_tailor":
+        from applypilot.config import load_blocked_sites
+        blocked_sites, _ = load_blocked_sites()
+        if blocked_sites:
+            placeholders = ",".join("?" * len(blocked_sites))
+            where += f" AND site NOT IN ({placeholders})"
+            params.extend(blocked_sites)
+
     query = f"SELECT * FROM jobs WHERE {where} ORDER BY fit_score DESC NULLS LAST, discovered_at DESC"
     if limit > 0:
         query += " LIMIT ?"
