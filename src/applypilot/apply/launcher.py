@@ -69,7 +69,19 @@ if platform.system() != "Windows":
 # ---------------------------------------------------------------------------
 
 def _make_mcp_config(cdp_port: int) -> dict:
-    """Build MCP config dict for a specific CDP port."""
+    """Build MCP config dict for a specific CDP port.
+
+    SAFETY FIX: this used to also register a "gmail" MCP server, and the apply
+    prompt instructed the agent to send an email application (with the resume
+    attached) as a fallback when a job posting was email-only, and to search/
+    read the candidate's inbox for a verification code as part of an
+    autonomous sign-in/sign-up flow. Sending a message or reading a real
+    inbox on the candidate's behalf, unsupervised, is not something this
+    agent should ever do -- removed entirely so it isn't reachable regardless
+    of what any future prompt change says. Email-only postings and login
+    walls are now reported as FAILED for the candidate to handle manually
+    (see apply/prompt.py).
+    """
     return {
         "mcpServers": {
             "playwright": {
@@ -79,10 +91,6 @@ def _make_mcp_config(cdp_port: int) -> dict:
                     f"--cdp-endpoint=http://localhost:{cdp_port}",
                     f"--viewport-size={config.DEFAULTS['viewport']}",
                 ],
-            },
-            "gmail": {
-                "command": "npx",
-                "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
             },
         }
     }
@@ -364,6 +372,14 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
 
     # Build claude command
+    #
+    # NOTE: this used to also pass --disallowedTools blocking a list of Gmail
+    # *management* actions (labels, filters, deletion) -- but never blocked
+    # mcp__gmail__send_email or mcp__gmail__search_emails/read_email, i.e. the
+    # actually sensitive operations (sending mail, reading the inbox) were the
+    # ones left reachable while only administrative actions were blocked. Now
+    # moot: the "gmail" MCP server is no longer registered in _make_mcp_config
+    # at all (see its docstring), so none of these tool names exist to call.
     cmd = [
         "claude",
         "--model", model,
@@ -371,16 +387,6 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         "--mcp-config", str(mcp_config_path),
         "--permission-mode", "bypassPermissions",
         "--no-session-persistence",
-        "--disallowedTools", (
-            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
-            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
-            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
-            "mcp__gmail__create_label,mcp__gmail__update_label,"
-            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
-            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
-            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
-            "mcp__gmail__delete_filter"
-        ),
         "--output-format", "stream-json",
         "--verbose", "-",
     ]
